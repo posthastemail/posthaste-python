@@ -7,8 +7,12 @@ instantly, adds nothing to your lockfile, and brings no transitive supply chain 
 team to audit.
 
 ```bash
-pip install posthaste
+pip install posthaste-email
 ```
+
+The distribution is `posthaste-email`; the import stays `posthaste`, so no code changes either
+way. Install the full name — the bare `posthaste` on PyPI is an unrelated 2013 OpenStack utility
+that still holds the namespace, so the short form installs the wrong package without erroring.
 
 Requires Python 3.9 or newer. Fully typed, with a `py.typed` marker, so mypy and pyright see every
 annotation.
