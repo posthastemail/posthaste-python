@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+# The DISTRIBUTION name, which is not the import name.
+#
+# `posthaste` on PyPI is taken — by a 2013 Rackspace utility for OpenStack
+# Swift, dead at 0.2.2 but holding the namespace. So this installs as
+# `posthaste-email` and imports as `posthaste`, which PyPI allows and which
+# means no code changes anywhere.
+#
+# The install instruction matters more than it looks: `pip install posthaste`
+# would put a decade-old OpenStack tool on somebody's machine, which is a worse
+# failure than a 404 because it succeeds.
+name = "posthaste-email"
+version = "0.1.0"
+description = "Official Python SDK for the Posthaste transactional email API."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+keywords = ["posthaste", "email", "transactional-email", "smtp", "webhooks"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Communications :: Email",
+  "Typing :: Typed",
+]
+
+# Deliberately empty, and it is a feature rather than an omission.
+#
+# The TypeScript SDK ships with no runtime dependencies at all, and the same
+# promise is worth more in Python than it is in Node: this package goes into
+# other people's applications, and every dependency it declares is one more
+# thing their resolver has to satisfy and their security team has to audit.
+# The standard library has an HTTP client and an HMAC, which is the whole
+# requirement. Anyone who wants httpx or requests can pass one in — see
+# `Transport` in `posthaste.http`.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://posthastemail.dev"
+Documentation = "https://posthastemail.dev/docs/python"
+Source = "https://github.com/posthastemail/posthaste-python"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/posthaste"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/posthaste", "tests", "README.md", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# So the suite runs against the source tree without an install step. The
+# packaging test still asserts the wheel would carry everything it needs.
+pythonpath = ["src"]
+filterwarnings = ["error"]

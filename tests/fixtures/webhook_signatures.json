@@ -1,0 +1,55 @@
+{
+  "_generatedBy": "packages/sdk-python/scripts/generate-webhook-fixtures.ts",
+  "_signedBy": "packages/core/src/webhook-signature.ts — the implementation that signs live deliveries",
+  "_regenerate": "pnpm exec tsx packages/sdk-python/scripts/generate-webhook-fixtures.ts",
+  "fixtures": [
+    {
+      "name": "delivered",
+      "note": "An ordinary delivered event, exactly as the worker serialises it.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "{\"id\":\"evt_7Fk2mQpX9sLbN4tRvZa1Cd\",\"type\":\"delivered\",\"createdAt\":\"2026-08-20T09:14:02.117Z\",\"data\":{\"messageId\":\"msg_AZLm3kQ8T2Sf9pXbNc7HrQ\",\"detail\":{\"smtpCode\":250},\"tags\":[\"receipt\"],\"metadata\":{\"orderId\":\"4471\"}}}",
+      "header": "t=1760000000,v1=6de3e1c4c6f338e013449c7acf86e72c17fba7e50d834bb76542035109e7a13b"
+    },
+    {
+      "name": "bounced_unicode",
+      "note": "Non-ASCII in the payload. The HMAC is over UTF-8 bytes, so a receiver that hashes a differently-encoded string fails here and nowhere else.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "{\"id\":\"evt_unicode\",\"type\":\"bounced\",\"createdAt\":\"2026-08-20T09:14:02.117Z\",\"data\":{\"messageId\":\"msg_unicode\",\"detail\":{\"reason\":\"Boîte aux lettres pleine — 郵便受けがいっぱいです 📮\"}}}",
+      "header": "t=1760000000,v1=c3953187006e04e982b6b799054654d4f2d36379678c6feb5b943f985ffea1dc"
+    },
+    {
+      "name": "script_tag",
+      "note": "An embedded </script> and a lone backslash. Nothing here may be escaped, unescaped or normalised on the way into the HMAC.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "{\"id\":\"evt_script\",\"type\":\"complained\",\"note\":\"</script><b>\\\\o/</b>\"}",
+      "header": "t=1760000000,v1=89feaf33f3bc18e8dd341a63c8303b44d1024627a2a20b25a290a4f26efbae1b"
+    },
+    {
+      "name": "reserialisation_trap",
+      "note": "Two spaces, a trailing newline and keys in an order json.dumps would not reproduce. Verifying a parsed-then-re-serialised body fails on exactly this, which is the most common support question about webhooks.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "{  \"type\":\"delivered\",\n  \"id\":\"evt_spacing\"  }\n",
+      "header": "t=1760000000,v1=23d491f903c02510a342eb6fb6eac8fdfb8ad6907b0ef3b4bdb1fb7961202b7d"
+    },
+    {
+      "name": "empty_body",
+      "note": "A zero-length body still signs. The signed payload is the timestamp, a dot, and nothing.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "",
+      "header": "t=1760000000,v1=ffb4713e6d67102899fd90b2a35b362dd0592e965c1fb6ab7ca7e9930014ce56"
+    },
+    {
+      "name": "wrong_secret",
+      "note": "Signed with a DIFFERENT secret. Must be rejected as signature_mismatch — this is the forgery case.",
+      "secret": "whsec_example_secret_a1b2c3d4e5f6a7b8c9d0",
+      "timestamp": 1760000000,
+      "body": "{\"id\":\"evt_forged\",\"type\":\"delivered\"}",
+      "header": "t=1760000000,v1=18087aec37376f1fc5e3153bca225ac49a254c12f852128ca9e248b60551f7a7"
+    }
+  ]
+}
