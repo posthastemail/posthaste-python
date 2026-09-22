@@ -57,7 +57,7 @@ __all__ = [
 ]
 
 #: Kept in step with pyproject.toml — the only place the version is stated twice.
-SDK_VERSION = "0.1.1"
+SDK_VERSION = "0.2.0"
 
 DEFAULT_BASE_URL = "https://api.posthastemail.dev"
 DEFAULT_TIMEOUT = 30.0

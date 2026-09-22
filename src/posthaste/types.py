@@ -75,6 +75,22 @@ __all__ = [
     "Invoice",
     "InvoiceDetail",
     "DownloadedAttachment",
+    "CONSENT_SOURCES",
+    "BROADCAST_STATUSES",
+    "ConsentSource",
+    "BroadcastStatus",
+    "ContactImportRow",
+    "Contact",
+    "ContactDetail",
+    "ContactPage",
+    "ImportContactsResult",
+    "ContactList",
+    "AddListMembersResult",
+    "BroadcastProgress",
+    "BroadcastDelivery",
+    "Broadcast",
+    "BroadcastDetail",
+    "BroadcastTestResult",
 ]
 
 # ---------------------------------------------------------------------------
@@ -140,6 +156,13 @@ SCOPES = (
     "streams:write",
     "templates:read",
     "templates:write",
+    # The address book, lists included.
+    "contacts:read",
+    "contacts:write",
+    # Separate from `contacts:*`: reading an address book and MAILING it are
+    # different authorities.
+    "broadcasts:read",
+    "broadcasts:write",
 )
 Scope = str
 
@@ -319,7 +342,14 @@ class CreatedDomain(TypedDict):
 class RecordCheck(TypedDict):
     record: Literal["dkim", "spf", "dmarc"]
     name: str
+    #: Whether this record gates verification. Only DKIM does.
     required: bool
+    #: How much its absence costs you — a different question from whether it
+    #: gates. SPF and DMARC are "recommended": neither is needed for our mail
+    #: to authenticate as your domain, and both affect whether it reaches an
+    #: inbox. Gmail and Yahoo have required DMARC from bulk senders since
+    #: February 2024 and count its absence against everyone else.
+    importance: Literal["required", "recommended", "optional"]
     status: Literal["pass", "fail", "not_found"]
     detail: str
 
@@ -613,6 +643,54 @@ class ApiKey(TypedDict):
     revokedAt: Optional[str]
 
 
+class Verification(TypedDict, total=False):
+    """A started verification: the handle, and the budget it starts with."""
+
+    id: str
+    status: str
+    #: The message the code went out on, for correlating with the delivery log.
+    messageId: Optional[str]
+    #: Present when an idempotency key replayed an earlier start.
+    replayed: bool
+    attemptsRemaining: int
+    sends: int
+    maxSends: int
+    expiresAt: str
+    resendAfter: str
+
+
+class VerificationCheck(TypedDict, total=False):
+    """The answer to a check.
+
+    ``pending`` means the code was WRONG and there are attempts left. It arrives
+    as a 200, not an error, so a mistyped digit does not raise.
+    """
+
+    id: str
+    status: str
+    approvedAt: Optional[str]
+    attemptsRemaining: int
+
+
+class VerificationStatus(TypedDict, total=False):
+    id: str
+    status: str
+    attemptsRemaining: int
+    sends: int
+    maxSends: int
+    expiresAt: str
+    approvedAt: Optional[str]
+    createdAt: str
+    messageId: Optional[str]
+
+
+class VerificationSettings(TypedDict, total=False):
+    brandName: Optional[str]
+    #: The public URL a recipient's mail client fetches — not a storage key.
+    logoUrl: Optional[str]
+    logoUpdatedAt: Optional[str]
+
+
 class MessageStream(TypedDict):
     id: str
     #: What a send names. The id is the handle; this is the name in your code.
@@ -713,3 +791,170 @@ class InvoiceDetail(Invoice):
     """The single-invoice fetch carries the supplier block the list omits."""
 
     supplier: Dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Contacts and lists
+# ---------------------------------------------------------------------------
+
+#: Where permission to mail a contact came from. Required on every write that
+#: creates one — it is what makes a list operational rather than bought.
+CONSENT_SOURCES = ("signed_up", "customer", "imported_with_consent")
+ConsentSource = str
+
+
+class ContactImportRow(TypedDict, total=False):
+    """One row of `contacts.import_`.
+
+    A bad address is reported back by its index rather than failing the batch.
+    """
+
+    email: str
+    name: str
+    #: Merge fields. Strings only; names are letters, digits and underscores.
+    fields: Dict[str, str]
+
+
+class Contact(TypedDict):
+    id: str
+    email: str
+    name: Optional[str]
+    fields: Dict[str, str]
+    consentSource: ConsentSource
+    consentAt: str
+    #: True when a send to this address would be refused on some stream. Read
+    #: from the suppression list on every request, never stored on the contact,
+    #: so an unsubscribe shows here the moment it happens.
+    suppressed: bool
+    suppressionReasons: List[SuppressionReason]
+    createdAt: str
+    updatedAt: str
+
+
+class ContactDetail(Contact):
+    """`GET /v1/contacts/:id` — the contact, with the lists it is on."""
+
+    #: `{"id": "lst_…", "name": …}` per list.
+    lists: List[Dict[str, str]]
+
+
+class ContactPage(Page):
+    """`GET /v1/contacts` — a `Page` that also carries the size of the whole book."""
+
+    #: Every contact on the account, whatever the filters — the plan meter's number.
+    total: int
+
+
+class ImportContactsResult(TypedDict, total=False):
+    created: int
+    #: Already in the book. A name given replaces the old one; fields merge.
+    updated: int
+    #: `{"index", "email", "reason"}` per row that was not an address.
+    invalid: List[Dict[str, Any]]
+    #: New rows past the plan's contact limit, which were NOT imported.
+    overLimit: int
+    #: Imported rows whose address is suppressed — imported and counted, never
+    #: dropped silently.
+    suppressed: int
+    #: `None` when no list was given.
+    addedToList: Optional[int]
+    #: Present only when `overLimit` is not zero.
+    limitMessage: str
+
+
+class ContactList(TypedDict):
+    id: str
+    name: str
+    description: Optional[str]
+    memberCount: int
+    createdAt: str
+    updatedAt: str
+
+
+class AddListMembersResult(TypedDict):
+    added: int
+    #: Already on the list. Counted, not refused.
+    alreadyMembers: int
+    #: Ids that name no contact on this account, exactly as given.
+    notFound: List[str]
+
+
+# ---------------------------------------------------------------------------
+# Broadcasts
+# ---------------------------------------------------------------------------
+
+#: draft → scheduled → sending → sent, with paused and canceled off to the side.
+#: Only a draft can be edited or deleted.
+BROADCAST_STATUSES = ("draft", "scheduled", "sending", "paused", "sent", "canceled")
+BroadcastStatus = str
+
+
+class BroadcastProgress(TypedDict):
+    #: The list's size when sending started — zero until then. Progress, not the
+    #: finish line: wait for `status` to leave `sending`.
+    targeted: int
+    accepted: int
+    #: Skipped because the address is suppressed.
+    suppressed: int
+    failed: int
+    #: Why the failed ones failed, as `{reason: count}` — e.g. `missing_field:plan`.
+    failures: Dict[str, int]
+
+
+class BroadcastDelivery(TypedDict):
+    """What became of the mail, read from the messages themselves."""
+
+    inFlight: int
+    delivered: int
+    bounced: int
+    complained: int
+    failed: int
+    #: Recipients who pressed the unsubscribe link in this broadcast.
+    unsubscribed: int
+
+
+# `from` again, so the functional form — see `MessageSummary`.
+Broadcast = TypedDict(
+    "Broadcast",
+    {
+        "id": str,
+        "name": str,
+        "status": BroadcastStatus,
+        # Why it is paused, e.g. `paused_by_user` or `daily_limit`. The QUALITY
+        # pauses — `high_bounce_rate`, `high_complaint_rate` — cannot be resumed.
+        "pauseReason": Optional[str],
+        # `not_required`, `pending`, `approved` or `rejected`. An account's first
+        # broadcast to more than 1,000 people waits in `pending` for a person.
+        "reviewState": str,
+        # `{"id", "name", "memberCount"}`; `None` once the list has been deleted.
+        "list": Optional[Dict[str, Any]],
+        # The stream slug. Never the transactional stream.
+        "stream": str,
+        "from": str,
+        "replyTo": Optional[str],
+        "template": Optional[Dict[str, Any]],
+        "subject": Optional[str],
+        "html": Optional[str],
+        "text": Optional[str],
+        "scheduledAt": Optional[str],
+        "startedAt": Optional[str],
+        "finishedAt": Optional[str],
+        "progress": BroadcastProgress,
+        "createdAt": str,
+        "updatedAt": str,
+    },
+)
+
+
+class BroadcastDetail(Broadcast):
+    """`GET /v1/broadcasts/:id` adds `delivery`."""
+
+    delivery: BroadcastDelivery
+
+
+class BroadcastTestResult(TypedDict, total=False):
+    to: str
+    #: The `msg_` id of the test message, when it was accepted.
+    id: str
+    #: Why it was not — e.g. a merge field with no value.
+    error: Dict[str, str]

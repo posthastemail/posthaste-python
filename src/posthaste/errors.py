@@ -119,6 +119,27 @@ KNOWN_ERROR_TYPES = frozenset(
         "suppression_protected",
         "suppression_platform",
         "suppression_hard_bounce",
+        # Contacts and lists. `contact_exists` carries the existing contact's
+        # `id`; the two limit types carry `limit` and `used`.
+        "contact_exists",
+        "contact_limit_reached",
+        "list_limit_reached",
+        "name_taken",
+        # Broadcasts. `quality_pause` is the one to handle deliberately: a send
+        # stopped for high bounce or complaint rates cannot be resumed, only
+        # canceled and replaced.
+        "too_many_drafts",
+        "not_a_draft",
+        "broadcast_has_history",
+        "transactional_stream",
+        "list_missing",
+        "list_empty",
+        "template_unpublished",
+        "not_running",
+        "not_paused",
+        "quality_pause",
+        "finished",
+        "not_a_team_member",
         # Billing. Session-only, so an API-key caller never sees them.
         "not_configured",
         "provider_error",

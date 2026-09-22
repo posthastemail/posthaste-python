@@ -337,6 +337,62 @@ bytes we sent, not the object they decode to. This is the single most common rea
 common case where a bad delivery just gets a `400`. Use `verify_webhook` directly when the reason
 matters. The signing secret is the one returned once when the endpoint was created.
 
+## Contacts and broadcasts
+
+A broadcast is one message to every contact on a list — for **operational mail to your own users**
+(outage notices, terms changes, release notes), never marketing. Every contact records where
+permission to mail them came from (`consent`), and a send skips anybody on the suppression list.
+
+```python
+import time
+
+# 1. A list, and your users on it. Up to 1,000 rows per import call, merged by address.
+customers = posthaste.lists.create(name="Customers")
+
+report = posthaste.contacts.import_(
+    [
+        {"email": "ada@example.com", "name": "Ada", "fields": {"plan": "pro"}},
+        {"email": "grace@example.com", "name": "Grace"},
+    ],
+    consent="customer",
+    list_id=customers["id"],
+)
+# Bad rows come back by index rather than failing the batch; rows past your plan's limit are counted.
+print(report["created"], report["updated"], report["invalid"], report["overLimit"])
+
+# 2. A draft. Nothing is sent yet. Merge {{name}}, {{email}} or any contact field.
+draft = posthaste.broadcasts.create(
+    name="September outage notice",
+    list_id=customers["id"],
+    from_="Acme <status@example.com>",
+    subject="We were down for 20 minutes",
+    text="Hi {{name}}, here is what happened.",
+)
+
+# 3. Send it — now, or pass scheduled_at="2026-10-01T09:00:00Z" for later.
+posthaste.broadcasts.send(draft["id"])
+
+# 4. The mail goes out in the background. Poll for progress.
+b = posthaste.broadcasts.get(draft["id"])
+while b["status"] in ("scheduled", "sending"):
+    time.sleep(5)
+    b = posthaste.broadcasts.get(draft["id"])
+    print(b["progress"]["accepted"], "/", b["progress"]["targeted"], b["delivery"]["delivered"])
+print(b["status"], b["pauseReason"])  # sent None — or paused with the reason
+```
+
+`import_` carries an underscore because `import` is a keyword. `list_id` and `list_ids` are the
+wire's `list` and `lists`.
+
+A broadcast paused for `high_bounce_rate` or `high_complaint_rate` **cannot be resumed** (a
+`ConflictError` of type `quality_pause`): cancel it, clean the list, and send a new one. An
+account's first broadcast to more than 1,000 people waits with `reviewState == "pending"` until we
+have looked at it.
+
+`send` and `resume` are **not** retried automatically and `pause` and `cancel` are. None of them can
+send twice — the state change is guarded server-side — but a retried `send` after a lost response
+would come back `not_a_draft` and hide the success, so read `get` instead.
+
 ## Every method
 
 ```text
@@ -388,6 +444,44 @@ templates.delete(template_id)                 DELETE /v1/templates/:id
 streams.list()                                GET    /v1/streams
 streams.create(slug=..., name=...)            POST   /v1/streams
 
+verifications.start(to=..., from_=...)        POST   /v1/verifications
+verifications.check(verification_id, code)    POST   /v1/verifications/:id/check
+verifications.resend(verification_id, to)     POST   /v1/verifications/:id/resend
+verifications.cancel(verification_id)         POST   /v1/verifications/:id/cancel
+verifications.get(verification_id)            GET    /v1/verifications/:id
+verifications.settings()                      GET    /v1/verifications/settings
+verifications.update_settings(...)            PUT    /v1/verifications/settings
+
+contacts.list(...)                            GET    /v1/contacts
+contacts.auto_paginate(...)                   GET    /v1/contacts         (all pages)
+contacts.list_all(...)                        GET    /v1/contacts         (all pages)
+contacts.create(email=..., consent=...)       POST   /v1/contacts
+contacts.import_(rows, consent=...)           POST   /v1/contacts/import
+contacts.get(contact_id)                      GET    /v1/contacts/:id
+contacts.update(contact_id, ...)              PATCH  /v1/contacts/:id
+contacts.delete(contact_id)                   DELETE /v1/contacts/:id
+
+lists.list()                                  GET    /v1/lists            (not paged)
+lists.create(name=...)                        POST   /v1/lists
+lists.get(list_id)                            GET    /v1/lists/:id
+lists.update(list_id, ...)                    PATCH  /v1/lists/:id
+lists.delete(list_id)                         DELETE /v1/lists/:id
+lists.add_members(list_id, contact_ids)       POST   /v1/lists/:id/members
+lists.remove_member(list_id, contact_id)      DELETE /v1/lists/:id/members/:contactId
+
+broadcasts.list(...)                          GET    /v1/broadcasts
+broadcasts.auto_paginate(...)                 GET    /v1/broadcasts       (all pages)
+broadcasts.list_all(...)                      GET    /v1/broadcasts       (all pages)
+broadcasts.create(...)                        POST   /v1/broadcasts
+broadcasts.get(broadcast_id)                  GET    /v1/broadcasts/:id
+broadcasts.update(broadcast_id, ...)          PATCH  /v1/broadcasts/:id
+broadcasts.delete(broadcast_id)               DELETE /v1/broadcasts/:id
+broadcasts.send(broadcast_id, ...)            POST   /v1/broadcasts/:id/send
+broadcasts.pause(broadcast_id)                POST   /v1/broadcasts/:id/pause
+broadcasts.resume(broadcast_id)               POST   /v1/broadcasts/:id/resume
+broadcasts.cancel(broadcast_id)               POST   /v1/broadcasts/:id/cancel
+broadcasts.test(broadcast_id, to)             POST   /v1/broadcasts/:id/test
+
 api_keys.list(...)                            GET    /v1/api-keys
 api_keys.auto_paginate(...)                   GET    /v1/api-keys         (all pages)
 api_keys.list_all(...)                        GET    /v1/api-keys         (all pages)
@@ -401,6 +495,14 @@ billing.auto_paginate_invoices(...)           GET    /v1/billing/invoices (all p
 billing.list_all_invoices(...)                GET    /v1/billing/invoices (all pages)
 billing.invoice(invoice_id)                   GET    /v1/billing/invoices/:id
 ```
+
+`verifications.check` **does not raise on a wrong code** — it returns `status="pending"` with
+`attemptsRemaining`, because a mistyped digit is the commonest outcome in the product and this
+client raises on every 4xx. It does raise on a `409`, which is terminal: expired, cancelled, already
+used, or out of attempts. Only `start` is retried, and only when you pass an `idempotency_key`; a
+blind retry would mail a second code that supersedes the one the user is at that moment typing in.
+`update_settings` distinguishes omitting a field from passing `None` — the first leaves it alone,
+the second clears it.
 
 **Deliberately absent:** creating and revoking API keys, and everything else that requires a
 signed-in person rather than a key — checkout, plan changes, profile edits, team management. Those

@@ -14,7 +14,7 @@ build-backend = "hatchling.build"
 # would put a decade-old OpenStack tool on somebody's machine, which is a worse
 # failure than a 404 because it succeeds.
 name = "posthaste-email"
-version = "0.1.1"
+version = "0.2.0"
 description = "Official Python SDK for the Posthaste transactional email API."
 readme = "README.md"
 license = "MIT"

@@ -26,6 +26,16 @@ from .pagination import auto_paginate as _walk
 from .pagination import collect as _collect
 from .types import (
     Account,
+    AddListMembersResult,
+    Broadcast,
+    BroadcastDetail,
+    BroadcastTestResult,
+    Contact,
+    ContactDetail,
+    ContactImportRow,
+    ContactList,
+    ContactPage,
+    ImportContactsResult,
     ApiKey,
     BatchResult,
     Billing,
@@ -55,11 +65,17 @@ from .types import (
     TemplateVariable,
     TemplateVersion,
     Usage,
+    Verification,
+    VerificationCheck,
+    VerificationSettings,
+    VerificationStatus,
     Webhook,
 )
 
 __all__ = [
     "AccountResource",
+    "AddressesResource",
+    "VerificationsResource",
     "ApiKeysResource",
     "BillingResource",
     "DomainsResource",
@@ -69,6 +85,9 @@ __all__ = [
     "SuppressionsResource",
     "TemplatesResource",
     "WebhooksResource",
+    "ContactsResource",
+    "ListsResource",
+    "BroadcastsResource",
 ]
 
 #: The default ceiling on every `list_all`. See `pagination.collect` for why
@@ -78,6 +97,11 @@ DEFAULT_MAX_ITEMS = 1000
 # The only query parameter whose Python spelling differs from its wire
 # spelling. `from` is a keyword, so the method signature says `from_`.
 _QUERY_ALIASES = {"from_": "from"}
+
+
+#: Distinguishes "not given" from "given as None", which the branding settings
+#: need: an absent field is left alone and an explicit ``None`` clears it.
+_UNSET: Any = object()
 
 
 def _fields(**kwargs: Any) -> Dict[str, Any]:
@@ -826,6 +850,248 @@ class ApiKeysResource(_Resource):
 # ---------------------------------------------------------------------------
 
 
+class AddressesResource(_Resource):
+    """Is this address worth sending to?
+
+    Two shapes, and `check_many` is the one to reach for. Lookups are
+    deduplicated by domain server-side, so a hundred addresses across two
+    providers are two DNS queries; cleaning a list one address at a time is
+    slower for you and worse for everybody.
+
+    A verdict of `unknown` means DNS could not be reached. It is NOT a reason to
+    drop an address, it is never billed, and asking again later may well answer.
+    """
+
+    def check(
+        self, address: str, *, request_options: Optional[RequestOptions] = None
+    ) -> Dict[str, Any]:
+        """`POST /v1/address-checks` for one address.
+
+        POST rather than GET because an address in a query string is personal
+        data in every access log between you and us.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/address-checks",
+            body={"address": address},
+            idempotent=True,
+            options=request_options,
+        )
+
+    def check_many(
+        self, addresses: Sequence[str], *, request_options: Optional[RequestOptions] = None
+    ) -> Dict[str, Any]:
+        """`POST /v1/address-checks` for up to 100 at once.
+
+        Returns the results in the order sent, plus a count of each verdict —
+        because counting them is the first thing every caller would otherwise
+        write for themselves.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/address-checks",
+            body={"addresses": list(addresses)},
+            idempotent=True,
+            options=request_options,
+        )
+
+
+class VerificationsResource(_Resource):
+    """One-time codes.
+
+    Two calls: `start` mails a code and returns the handle, `check` says whether
+    the code typed back was the right one.
+
+    THE SHAPE TO NOTICE: `check` does NOT raise on a wrong code. It returns
+    `status="pending"` with the attempts left, because a mistyped digit is the
+    most common outcome in the product and this client raises on every 4xx — an
+    exception there would put your happy path inside an `except`. It DOES raise
+    on a 409, which means terminal: expired, cancelled, already used, or out of
+    attempts. That is genuinely a different branch, and the only way forward is
+    a new verification.
+    """
+
+    def start(
+        self,
+        *,
+        to: str,
+        from_: str,
+        code_length: Optional[int] = None,
+        stream: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Mapping[str, str]] = None,
+        idempotency_key: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Verification:
+        """`POST /v1/verifications` — mint a code, mail it, return the handle.
+
+        `from_` must be a domain you have verified: a code carries a brand
+        claim, so it goes out under your own name or not at all. The trailing
+        underscore is Python's, not ours — `from` is a keyword.
+
+        Hold the returned `id`. A verification is addressed by it and never by
+        recipient, so this API cannot be asked questions about an address the
+        caller was not already given.
+
+        RETRIED ONLY WITH AN IDEMPOTENCY KEY, and the reason is sharper than on
+        `emails.send`: a blind retry mails a SECOND code, which supersedes the
+        first — leaving the user typing a code our own retry has just killed.
+        """
+        body: Dict[str, Any] = {"to": to, "from": from_}
+        if code_length is not None:
+            body["codeLength"] = code_length
+        if stream is not None:
+            body["stream"] = stream
+        if tags is not None:
+            body["tags"] = tags
+        if metadata is not None:
+            body["metadata"] = dict(metadata)
+        if idempotency_key is not None:
+            body["idempotencyKey"] = idempotency_key
+
+        return self._http.request(
+            "POST",
+            "/v1/verifications",
+            body=body,
+            idempotent=idempotency_key is not None,
+            options=request_options,
+        )
+
+    def check(
+        self,
+        verification_id: str,
+        code: str,
+        *,
+        request_options: Optional[RequestOptions] = None,
+    ) -> VerificationCheck:
+        """`POST /v1/verifications/:id/check` — was that the code?
+
+        `code` is a STRING. Passed as an int, `012345` becomes `12345`, the
+        digest stops matching, and one caller in ten can never verify anybody
+        while every test written with a code starting 1-9 passes.
+
+        NEVER RETRIED. A check consumes an attempt whether or not the response
+        reaches us, so an automatic retry would spend the user's guesses on
+        their behalf — a flaky connection closing a verification they never got
+        wrong once.
+
+        Running out of attempts BURNS the code: the correct one stops working
+        too, which is what makes the cap a protection rather than a tally.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/verifications/{_path(verification_id)}/check",
+            body={"code": code},
+            idempotent=False,
+            options=request_options,
+        )
+
+    def resend(
+        self,
+        verification_id: str,
+        to: str,
+        *,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Verification:
+        """`POST /v1/verifications/:id/resend` — mail a FRESH code.
+
+        Not the same one: only a digest of it is stored. The new code inherits
+        the original deadline and the original attempt budget, so a resend is
+        neither a way to hold a verification open nor a way to buy more guesses.
+
+        `to` is required. It is matched against the stored digest, so an id on
+        its own — even a leaked one — can never redirect a code to a new mailbox.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/verifications/{_path(verification_id)}/resend",
+            body={"to": to},
+            idempotent=False,
+            options=request_options,
+        )
+
+    def cancel(
+        self, verification_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> Dict[str, Any]:
+        """`POST /v1/verifications/:id/cancel`.
+
+        Retried freely: cancelling twice is a 200, because this is the call most
+        likely to be repeated after a timeout and the state asked for already
+        holds.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/verifications/{_path(verification_id)}/cancel",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def get(
+        self, verification_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> VerificationStatus:
+        """`GET /v1/verifications/:id`.
+
+        Verifications are kept for 48 hours after they finish and then purged —
+        the row holds a credential digest and nothing needs it after a day. This
+        raises a 404 for anything older, by contract rather than by accident.
+        """
+        return self._http.request(
+            "GET",
+            f"/v1/verifications/{_path(verification_id)}",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def settings(
+        self, *, request_options: Optional[RequestOptions] = None
+    ) -> VerificationSettings:
+        """`GET /v1/verifications/settings` — the name and logo on every code."""
+        return self._http.request(
+            "GET", "/v1/verifications/settings", idempotent=True, options=request_options
+        )
+
+    def update_settings(
+        self,
+        *,
+        brand_name: Optional[str] = _UNSET,  # type: ignore[assignment]
+        code_length: Optional[int] = _UNSET,  # type: ignore[assignment]
+        logo: Optional[Mapping[str, str]] = _UNSET,  # type: ignore[assignment]
+        request_options: Optional[RequestOptions] = None,
+    ) -> VerificationSettings:
+        """`PUT /v1/verifications/settings`.
+
+        OMITTING A FIELD LEAVES IT ALONE; PASSING `None` CLEARS IT. The two are
+        different on purpose — collapsing them would make "remove my logo"
+        inexpressible, and would mean fixing a typo in your name silently
+        dropped your logo. That is why the defaults here are a sentinel rather
+        than `None`.
+
+        `logo` is `{"data": "<base64>"}` — PNG, JPEG or WebP, up to 512 KB. The
+        format is decided by reading the bytes, so SVG is refused however it is
+        declared: it can carry script, and the file is served from our domain to
+        your recipients.
+
+        Design for the logo to be BLOCKED. Most mail clients block images by
+        default, so the brand name is rendered as text and the logo carries that
+        name as its alt text.
+        """
+        body: Dict[str, Any] = {}
+        if brand_name is not _UNSET:
+            body["brandName"] = brand_name
+        if code_length is not _UNSET:
+            body["codeLength"] = code_length
+        if logo is not _UNSET:
+            body["logo"] = dict(logo) if logo is not None else None
+
+        return self._http.request(
+            "PUT",
+            "/v1/verifications/settings",
+            body=body,
+            idempotent=True,
+            options=request_options,
+        )
+
+
 class StreamsResource(_Resource):
     """Separating traffic that shares a sending IP.
 
@@ -1111,5 +1377,550 @@ class BillingResource(_Resource):
             "GET",
             f"/v1/billing/invoices/{_path(invoice_id)}",
             idempotent=True,
+            options=request_options,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Contacts
+# ---------------------------------------------------------------------------
+
+
+class ContactsResource(_Resource):
+    """The address book, for operational mail to your own users.
+
+    Outage notices, terms changes, release notes — not newsletters and not
+    bought lists. Every contact records where permission to mail them came from
+    (`consent`), and there is no way to create one without saying.
+
+    Whether a contact may be mailed is NOT stored on the contact. It is the
+    suppression list's answer, read on every request, so `suppressed` can never
+    disagree with what a send would do.
+    """
+
+    def _page(self, params: Mapping[str, Any], options: Optional[RequestOptions]) -> ContactPage:
+        return self._http.request(
+            "GET", "/v1/contacts", query=params, idempotent=True, options=options
+        )
+
+    def list(
+        self,
+        *,
+        limit: Optional[int] = None,
+        before: Optional[str] = None,
+        search: Optional[str] = None,
+        list_id: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> ContactPage:
+        """`GET /v1/contacts` — one keyset page, newest first. `limit` caps at 200.
+
+        `list_id` (the wire's `list`) narrows it to one list's members. `total`
+        is the whole book, whatever the filters — the number the plan's contact
+        limit counts.
+        """
+        return self._page(
+            _fields(limit=limit, before=before, search=search, list=list_id), request_options
+        )
+
+    def auto_paginate(
+        self,
+        *,
+        limit: Optional[int] = None,
+        before: Optional[str] = None,
+        search: Optional[str] = None,
+        list_id: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Iterator[Contact]:
+        """Every contact matching the filter, across every page."""
+        return _walk(
+            lambda p: self._page(p, request_options),
+            _fields(limit=limit, before=before, search=search, list=list_id),
+        )
+
+    def list_all(self, max_items: int = DEFAULT_MAX_ITEMS, **filters: Any) -> List[Contact]:
+        """Drain `auto_paginate` into a list. Same filters as `list`."""
+        return _collect(self.auto_paginate(**filters), max_items)
+
+    def create(
+        self,
+        *,
+        email: str,
+        consent: str,
+        name: Optional[str] = None,
+        fields: Optional[Mapping[str, str]] = None,
+        list_ids: Optional[Sequence[str]] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Contact:
+        """`POST /v1/contacts` — 201.
+
+        `consent` is one of `CONSENT_SOURCES`. `list_ids` (the wire's `lists`)
+        puts the new contact on up to 20 lists.
+
+        Safe to repeat: an address already in the book is refused with
+        `ConflictError` (`contact_exists`) carrying the existing id, so a retry
+        after a lost response cannot leave a duplicate behind.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/contacts",
+            body=_fields(
+                email=email,
+                name=name,
+                fields=dict(fields) if fields is not None else None,
+                consent=consent,
+                lists=list(list_ids) if list_ids is not None else None,
+            ),
+            idempotent=True,
+            options=request_options,
+        )
+
+    def import_(
+        self,
+        contacts: Sequence[ContactImportRow],
+        *,
+        consent: str,
+        list_id: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> ImportContactsResult:
+        """`POST /v1/contacts/import` — up to 1,000 rows, merged by address.
+
+        The trailing underscore is Python's — `import` is a keyword.
+
+        PER-ROW OUTCOMES, NOT ALL-OR-NOTHING. A mistyped address comes back in
+        `invalid` with its index and the other rows go in. An address already in
+        the book is updated rather than duplicated and keeps its original
+        consent record. New rows past the plan's limit are counted in
+        `overLimit` rather than refused with the batch — check it.
+
+        Safe to repeat, because it is an upsert by address: a replayed import
+        reports its rows as `updated` rather than `created`.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/contacts/import",
+            body=_fields(
+                contacts=[dict(row) for row in contacts], consent=consent, list=list_id
+            ),
+            idempotent=True,
+            options=request_options,
+        )
+
+    def get(
+        self, contact_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> ContactDetail:
+        """`GET /v1/contacts/:id` — the contact, with the lists it is on."""
+        return self._http.request(
+            "GET", f"/v1/contacts/{_path(contact_id)}", idempotent=True, options=request_options
+        )
+
+    def update(
+        self,
+        contact_id: str,
+        *,
+        name: Optional[str] = _UNSET,  # type: ignore[assignment]
+        fields: Optional[Mapping[str, str]] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Contact:
+        """`PATCH /v1/contacts/:id` — the name and the fields.
+
+        Omitting `name` leaves it alone; passing `None` clears it. `fields`
+        REPLACES the whole set — send the ones you want to keep. The address is
+        the identity: delete and re-add to change it.
+        """
+        body: Dict[str, Any] = {}
+        if name is not _UNSET:
+            body["name"] = name
+        if fields is not None:
+            body["fields"] = dict(fields)
+        return self._http.request(
+            "PATCH",
+            f"/v1/contacts/{_path(contact_id)}",
+            body=body,
+            # It sets values rather than adding to them, so a repeat lands on
+            # the same state.
+            idempotent=True,
+            options=request_options,
+        )
+
+    def delete(self, contact_id: str, *, request_options: Optional[RequestOptions] = None) -> None:
+        """`DELETE /v1/contacts/:id` — 204. Off every list too.
+
+        It does NOT remove a suppression: deleting somebody who unsubscribed and
+        importing them again is not a way to mail them again.
+        """
+        self._http.request_void(
+            "DELETE",
+            f"/v1/contacts/{_path(contact_id)}",
+            idempotent=True,
+            options=request_options,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Lists
+# ---------------------------------------------------------------------------
+
+
+class ListsResource(_Resource):
+    """Contact lists: a named grouping of contacts, and what a broadcast is sent to."""
+
+    def list(
+        self, *, request_options: Optional[RequestOptions] = None
+    ) -> Dict[str, List[ContactList]]:
+        """`GET /v1/lists` — every list, by name, with its member count.
+
+        Not paged: the plan caps how many lists an account holds.
+        """
+        return self._http.request("GET", "/v1/lists", idempotent=True, options=request_options)
+
+    def create(
+        self,
+        *,
+        name: str,
+        description: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> ContactList:
+        """`POST /v1/lists` — 201. Names are unique per account, ignoring case.
+
+        NOT auto-retried: a repeat after a lost response would come back
+        `name_taken` — about the list the first attempt created — which reads as
+        a failure and carries no id to recover it by.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/lists",
+            body=_fields(name=name, description=description),
+            idempotent=False,
+            options=request_options,
+        )
+
+    def get(
+        self, list_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> ContactList:
+        """`GET /v1/lists/:id`."""
+        return self._http.request(
+            "GET", f"/v1/lists/{_path(list_id)}", idempotent=True, options=request_options
+        )
+
+    def update(
+        self,
+        list_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = _UNSET,  # type: ignore[assignment]
+        request_options: Optional[RequestOptions] = None,
+    ) -> ContactList:
+        """`PATCH /v1/lists/:id` — rename, or change the description.
+
+        Omitting `description` leaves it alone; passing `None` clears it.
+        """
+        body: Dict[str, Any] = _fields(name=name)
+        if description is not _UNSET:
+            body["description"] = description
+        return self._http.request(
+            "PATCH",
+            f"/v1/lists/{_path(list_id)}",
+            body=body,
+            idempotent=True,
+            options=request_options,
+        )
+
+    def delete(self, list_id: str, *, request_options: Optional[RequestOptions] = None) -> None:
+        """`DELETE /v1/lists/:id` — 204. The list only; its contacts stay in the book."""
+        self._http.request_void(
+            "DELETE", f"/v1/lists/{_path(list_id)}", idempotent=True, options=request_options
+        )
+
+    def add_members(
+        self,
+        list_id: str,
+        contact_ids: Sequence[str],
+        *,
+        request_options: Optional[RequestOptions] = None,
+    ) -> AddListMembersResult:
+        """`POST /v1/lists/:id/members` — add existing contacts by `con_` id, up to 1,000.
+
+        Idempotent by contract: a contact already on the list is counted in
+        `alreadyMembers`, and an id that names no contact comes back in
+        `notFound` rather than failing the rest.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/lists/{_path(list_id)}/members",
+            body={"contacts": list(contact_ids)},
+            idempotent=True,
+            options=request_options,
+        )
+
+    def remove_member(
+        self,
+        list_id: str,
+        contact_id: str,
+        *,
+        request_options: Optional[RequestOptions] = None,
+    ) -> None:
+        """`DELETE /v1/lists/:id/members/:contactId` — 204. Off the list; still in the book."""
+        self._http.request_void(
+            "DELETE",
+            f"/v1/lists/{_path(list_id)}/members/{_path(contact_id)}",
+            idempotent=True,
+            options=request_options,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Broadcasts
+# ---------------------------------------------------------------------------
+
+# Broadcast fields whose wire name differs from the Python one.
+_BROADCAST_FIELDS = {"from_": "from", "reply_to": "replyTo", "list_id": "list"}
+
+
+def _broadcast_body(**kwargs: Any) -> Dict[str, Any]:
+    return {
+        _BROADCAST_FIELDS.get(key, key): value
+        for key, value in kwargs.items()
+        if value is not None
+    }
+
+
+class BroadcastsResource(_Resource):
+    """One message to every contact on a list, for operational mail to your own users.
+
+    Every recipient goes through the same checks as a single send —
+    suppressions, the daily and monthly allowance, content lint — and each
+    message carries a one-click unsubscribe. `send` only moves the broadcast out
+    of `draft`; the mail goes out in the background, and `get` is how you follow
+    it.
+
+    RETRIES. Every state change is guarded server-side, so nothing here can send
+    a broadcast twice. The split is about what a caller sees after a lost
+    response: the calls that START mail (`send`, `resume`) are not retried, so
+    an uncertain outcome surfaces and you can read the state with `get`; the
+    calls that STOP it (`pause`, `cancel`) are, because giving up on one of
+    those over a timeout is the worse failure.
+    """
+
+    def _page(self, params: Mapping[str, Any], options: Optional[RequestOptions]) -> Page:
+        return self._http.request(
+            "GET", "/v1/broadcasts", query=params, idempotent=True, options=options
+        )
+
+    def list(
+        self,
+        *,
+        limit: Optional[int] = None,
+        before: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Page:
+        """`GET /v1/broadcasts` — one keyset page, newest first. `limit` caps at 100."""
+        return self._page(_fields(limit=limit, before=before), request_options)
+
+    def auto_paginate(
+        self,
+        *,
+        limit: Optional[int] = None,
+        before: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Iterator[Broadcast]:
+        """Every broadcast, across every page."""
+        return _walk(
+            lambda p: self._page(p, request_options), _fields(limit=limit, before=before)
+        )
+
+    def list_all(self, max_items: int = DEFAULT_MAX_ITEMS, **filters: Any) -> List[Broadcast]:
+        """Drain `auto_paginate` into a list."""
+        return _collect(self.auto_paginate(**filters), max_items)
+
+    def create(
+        self,
+        *,
+        name: str,
+        list_id: str,
+        from_: str,
+        stream: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        template: Optional[str] = None,
+        subject: Optional[str] = None,
+        html: Optional[str] = None,
+        text: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Broadcast:
+        """`POST /v1/broadcasts` — 201, a draft. Nothing is sent until `send`.
+
+        Give a `template` (a `tpl_` id or slug), or a `subject` with `html` or
+        `text` — not both. `{{email}}`, `{{name}}` and any contact field can be
+        merged. `stream` defaults to `announcements`; the transactional stream
+        is refused.
+
+        NOT auto-retried: each call creates another draft.
+        """
+        return self._http.request(
+            "POST",
+            "/v1/broadcasts",
+            body=_broadcast_body(
+                name=name,
+                list_id=list_id,
+                stream=stream,
+                from_=from_,
+                reply_to=reply_to,
+                template=template,
+                subject=subject,
+                html=html,
+                text=text,
+            ),
+            idempotent=False,
+            options=request_options,
+        )
+
+    def get(
+        self, broadcast_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> BroadcastDetail:
+        """`GET /v1/broadcasts/:id` — the broadcast, its `progress`, and `delivery`."""
+        return self._http.request(
+            "GET",
+            f"/v1/broadcasts/{_path(broadcast_id)}",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def update(
+        self,
+        broadcast_id: str,
+        *,
+        name: Optional[str] = None,
+        list_id: Optional[str] = None,
+        stream: Optional[str] = None,
+        from_: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        template: Optional[str] = None,
+        subject: Optional[str] = None,
+        html: Optional[str] = None,
+        text: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Broadcast:
+        """`PATCH /v1/broadcasts/:id` — drafts only; anything else is `not_a_draft`.
+
+        Setting `template` clears inline content, and setting inline content
+        clears the template, so the result is always one or the other.
+        """
+        return self._http.request(
+            "PATCH",
+            f"/v1/broadcasts/{_path(broadcast_id)}",
+            body=_broadcast_body(
+                name=name,
+                list_id=list_id,
+                stream=stream,
+                from_=from_,
+                reply_to=reply_to,
+                template=template,
+                subject=subject,
+                html=html,
+                text=text,
+            ),
+            idempotent=True,
+            options=request_options,
+        )
+
+    def delete(
+        self, broadcast_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> None:
+        """`DELETE /v1/broadcasts/:id` — 204.
+
+        A draft, or a canceled one that sent nothing. A broadcast that sent mail
+        keeps its record (`broadcast_has_history`); cancel it instead.
+        """
+        self._http.request_void(
+            "DELETE",
+            f"/v1/broadcasts/{_path(broadcast_id)}",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def send(
+        self,
+        broadcast_id: str,
+        *,
+        scheduled_at: Optional[str] = None,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Broadcast:
+        """`POST /v1/broadcasts/:id/send` — 202. Start now, or at `scheduled_at`.
+
+        `scheduled_at` is ISO-8601, at most 30 days ahead. Everything that would
+        fail the whole send is checked here, while you are looking: an empty
+        list (`list_empty`), an unverified sender (`domain_not_verified`), a
+        template with nothing published. An account's first broadcast to more
+        than 1,000 people comes back with `reviewState == "pending"` and does
+        not start until it is approved.
+
+        NOT auto-retried. A repeat is refused with `not_a_draft`, so it cannot
+        send twice — but that refusal would hide the success. Read `get` instead.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/broadcasts/{_path(broadcast_id)}/send",
+            body=_fields(scheduledAt=scheduled_at),
+            idempotent=False,
+            options=request_options,
+        )
+
+    def pause(
+        self, broadcast_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> Broadcast:
+        """`POST /v1/broadcasts/:id/pause` — stops within one recipient."""
+        return self._http.request(
+            "POST",
+            f"/v1/broadcasts/{_path(broadcast_id)}/pause",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def resume(
+        self, broadcast_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> Broadcast:
+        """`POST /v1/broadcasts/:id/resume`.
+
+        Refused with `quality_pause` when the pause was for high bounce or
+        complaint rates: sending the rest would harm delivery for everyone on
+        the platform. Cancel it, remove the addresses that bounced, and send a
+        new one.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/broadcasts/{_path(broadcast_id)}/resume",
+            idempotent=False,
+            options=request_options,
+        )
+
+    def cancel(
+        self, broadcast_id: str, *, request_options: Optional[RequestOptions] = None
+    ) -> Broadcast:
+        """`POST /v1/broadcasts/:id/cancel` — nothing further is sent. Sent mail stays sent."""
+        return self._http.request(
+            "POST",
+            f"/v1/broadcasts/{_path(broadcast_id)}/cancel",
+            idempotent=True,
+            options=request_options,
+        )
+
+    def test(
+        self,
+        broadcast_id: str,
+        to: Sequence[str],
+        *,
+        request_options: Optional[RequestOptions] = None,
+    ) -> Dict[str, List[BroadcastTestResult]]:
+        """`POST /v1/broadcasts/:id/test` — send it to up to five of your own team.
+
+        Anybody not on the account's team is refused (`not_a_team_member`).
+        Per-address outcomes: a merge field with no value is reported against
+        that address, not blanked. Not counted in the broadcast's progress.
+        NOT auto-retried — each call mails the test again.
+        """
+        return self._http.request(
+            "POST",
+            f"/v1/broadcasts/{_path(broadcast_id)}/test",
+            body={"to": list(to)},
+            idempotent=False,
             options=request_options,
         )

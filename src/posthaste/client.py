@@ -15,8 +15,13 @@ from .resources import (
     MessagesResource,
     StreamsResource,
     SuppressionsResource,
+    AddressesResource,
     TemplatesResource,
+    VerificationsResource,
     WebhooksResource,
+    ContactsResource,
+    ListsResource,
+    BroadcastsResource,
 )
 
 __all__ = ["Posthaste"]
@@ -39,7 +44,7 @@ class Posthaste:
             idempotency_key=f"receipt-{order_id}",
         )
 
-    :param api_key: a `ph_live_…` or `ph_test_…` key, sent as a bearer token.
+    :param api_key: a `ph_live_…` key, sent as a bearer token.
         Server-side only — a key carries no user identity and must never reach
         a browser.
     :param base_url: point this at your own deployment when self-hosting.
@@ -107,6 +112,11 @@ class Posthaste:
         self.billing = BillingResource(self._http)
         self.streams = StreamsResource(self._http)
         self.templates = TemplatesResource(self._http)
+        self.verifications = VerificationsResource(self._http)
+        self.addresses = AddressesResource(self._http)
+        self.contacts = ContactsResource(self._http)
+        self.lists = ListsResource(self._http)
+        self.broadcasts = BroadcastsResource(self._http)
 
     @property
     def base_url(self) -> str:

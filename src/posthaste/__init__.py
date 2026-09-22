@@ -60,8 +60,13 @@ from .resources import (
     MessagesResource,
     StreamsResource,
     SuppressionsResource,
+    AddressesResource,
     TemplatesResource,
+    VerificationsResource,
     WebhooksResource,
+    ContactsResource,
+    ListsResource,
+    BroadcastsResource,
 )
 from .webhooks import (
     ATTEMPT_HEADER,
@@ -130,6 +135,11 @@ __all__ = [
     "MessagesResource",
     "StreamsResource",
     "SuppressionsResource",
+    "AddressesResource",
     "TemplatesResource",
+    "VerificationsResource",
     "WebhooksResource",
+    "ContactsResource",
+    "ListsResource",
+    "BroadcastsResource",
 ]
